@@ -89,35 +89,75 @@ jobs:
             echo "files=${TOTAL} files (+${ADDED} -${REMOVED} ~${MODIFIED})" >> $GITHUB_OUTPUT
           fi
 
+      - name: Build payload
+        id: payload
+        run: |
+          # Build buttons array
+          BUTTONS='[
+            {"type":"button","text":{"type":"plain_text","text":"View Run"},"url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"},
+            {"type":"button","text":{"type":"plain_text","text":"Commit"},"url":"${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}"}'
+
+          PR="${{ steps.status.outputs.pr }}"
+          if [[ -n "$PR" ]]; then
+            BUTTONS="${BUTTONS},
+            {\"type\":\"button\",\"text\":{\"type\":\"plain_text\",\"text\":\"PR #${PR}\"},\"url\":\"${{ github.server_url }}/${{ github.repository }}/pull/${PR}\"}"
+          fi
+
+          BUTTONS="${BUTTONS}]"
+
+          # Build text
+          TEXT="${{ steps.status.outputs.icon }} *${{ github.repository }}* — ${{ inputs.result }}"
+
+          ENV="${{ inputs.environment }}"
+          if [[ -n "$ENV" ]]; then
+            TEXT="${TEXT} (${ENV})"
+          fi
+
+          TEXT="${TEXT}\n*Branch/Tag:* \`${{ github.ref_name }}\`"
+
+          MERGED="${{ steps.status.outputs.merged }}"
+          if [[ -n "$MERGED" ]]; then
+            TEXT="${TEXT}\n*Merged:* \`${MERGED}\`"
+            if [[ -n "$PR" ]]; then
+              TEXT="${TEXT} (<${{ github.server_url }}/${{ github.repository }}/pull/${PR}|PR #${PR}>)"
+            fi
+          fi
+
+          TEXT="${TEXT}\n*Commit:* <${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}|${{ steps.status.outputs.short_sha }}> by ${{ github.actor }}"
+          TEXT="${TEXT}\n*Message:* ${{ steps.status.outputs.commit_msg }}"
+
+          FILES="${{ steps.meta.outputs.files }}"
+          if [[ -n "$FILES" ]]; then
+            TEXT="${TEXT}\n*Changes:* ${FILES}"
+          fi
+
+          DURATION="${{ steps.meta.outputs.duration }}"
+          if [[ -n "$DURATION" ]]; then
+            TEXT="${TEXT}\n*Duration:* ${DURATION}"
+          fi
+
+          # Build full payload
+          PAYLOAD=$(jq -nc \
+            --arg color "${{ steps.status.outputs.color }}" \
+            --arg text "$TEXT" \
+            --argjson buttons "$BUTTONS" \
+            '{
+              "attachments": [{
+                "color": $color,
+                "blocks": [
+                  {"type":"section","text":{"type":"mrkdwn","text":$text}},
+                  {"type":"actions","elements":$buttons}
+                ]
+              }]
+            }')
+
+          echo "json<<EOFPAYLOAD" >> $GITHUB_OUTPUT
+          echo "$PAYLOAD" >> $GITHUB_OUTPUT
+          echo "EOFPAYLOAD" >> $GITHUB_OUTPUT
+
       - name: Send Slack notification
         uses: slackapi/slack-github-action@v2
         with:
           webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
           webhook-type: incoming-webhook
-          payload: |
-            {
-              "attachments": [
-                {
-                  "color": "${{ steps.status.outputs.color }}",
-                  "blocks": [
-                    {
-                      "type": "section",
-                      "text": {
-                        "type": "mrkdwn",
-                        "text": "${{ steps.status.outputs.icon }} *${{ github.repository }}* — ${{ inputs.result }}${{ inputs.environment != '' && format(' ({0})', inputs.environment) || '' }}\n*Branch/Tag:* `${{ github.ref_name }}`${{ steps.status.outputs.merged != '' && format('\n*Merged:* `{0}`', steps.status.outputs.merged) || '' }}${{ steps.status.outputs.pr != '' && format(' (<{0}/{1}/pull/{2}|PR #{2}>)', github.server_url, github.repository, steps.status.outputs.pr) || '' }}\n*Commit:* <${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}|${{ steps.status.outputs.short_sha }}> by ${{ github.actor }}\n*Message:* ${{ steps.status.outputs.commit_msg }}${{ steps.meta.outputs.files != '' && format('\n*Changes:* {0}', steps.meta.outputs.files) || '' }}${{ steps.meta.outputs.duration != '' && format('\n*Duration:* {0}', steps.meta.outputs.duration) || '' }}"
-                      }
-                    },
-                    {
-                      "type": "actions",
-                      "elements": [
-                        {
-                          "type": "button",
-                          "text": { "type": "plain_text", "text": "View Run" },
-                          "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-                        }
-                      ]
-                    }
-                  ]
-                }
-              ]
-            }
+          payload: ${{ steps.payload.outputs.json }}
