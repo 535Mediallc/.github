@@ -21,105 +21,91 @@ jobs:
     name: Slack Notification
     runs-on: ubuntu-latest
     steps:
-      - name: Determine status
-        id: status
+      - name: Gather info
+        id: info
         env:
-          COMMIT_MSG: ${{ github.event.head_commit.message }}
+          GH_TOKEN: ${{ github.token }}
         run: |
+          # Status
           case "${{ inputs.result }}" in
-            failure)
-              echo "color=#FF0000" >> $GITHUB_OUTPUT
-              echo "icon=❌" >> $GITHUB_OUTPUT
-              ;;
-            cancelled)
-              echo "color=#FFA500" >> $GITHUB_OUTPUT
-              echo "icon=⚠️" >> $GITHUB_OUTPUT
-              ;;
-            *)
-              echo "color=#36A64F" >> $GITHUB_OUTPUT
-              echo "icon=✅" >> $GITHUB_OUTPUT
-              ;;
+            failure)  COLOR="#FF0000"; ICON="❌" ;;
+            cancelled) COLOR="#FFA500"; ICON="⚠️" ;;
+            *)        COLOR="#36A64F"; ICON="✅" ;;
           esac
+          echo "color=$COLOR" >> $GITHUB_OUTPUT
+          echo "icon=$ICON" >> $GITHUB_OUTPUT
           echo "short_sha=${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
 
-          # Extract merged branch and PR number from commit message
+          # Fetch commit message safely via API
+          COMMIT_MSG=$(gh api "repos/${{ github.repository }}/commits/${{ github.sha }}" --jq '.commit.message' 2>/dev/null || echo "")
+          FIRST_LINE=$(echo "$COMMIT_MSG" | head -n1)
+
+          # Extract merged branch and PR number
           MERGED=""
           PR=""
-          if [[ "$COMMIT_MSG" =~ Merge\ pull\ request\ \#([0-9]+)\ from\ [^/]+/(.+) ]]; then
+          if [[ "$FIRST_LINE" =~ Merge\ pull\ request\ \#([0-9]+)\ from\ [^/]+/(.+) ]]; then
             PR="${BASH_REMATCH[1]}"
             MERGED="${BASH_REMATCH[2]}"
-          elif [[ "$COMMIT_MSG" =~ Merge\ pull\ request\ \#([0-9]+) ]]; then
+          elif [[ "$FIRST_LINE" =~ Merge\ pull\ request\ \#([0-9]+) ]]; then
             PR="${BASH_REMATCH[1]}"
-          elif [[ "$COMMIT_MSG" =~ Merge\ branch\ \'([^\']+)\' ]]; then
+          elif [[ "$FIRST_LINE" =~ Merge\ branch\ \'([^\']+)\' ]]; then
             MERGED="${BASH_REMATCH[1]}"
           fi
           echo "merged=$MERGED" >> $GITHUB_OUTPUT
           echo "pr=$PR" >> $GITHUB_OUTPUT
 
-          # Commit message (first line only, safe output via delimiter)
-          FIRST_LINE=$(echo "$COMMIT_MSG" | head -n1)
+          # Safe output for commit message via delimiter
           {
             echo "commit_msg<<EOFMSG"
             echo "$FIRST_LINE"
             echo "EOFMSG"
           } >> $GITHUB_OUTPUT
 
-      - name: Get pipeline duration and changed files
-        id: meta
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
           # Pipeline duration
-          RUN=$(gh api repos/${{ github.repository }}/actions/runs/${{ github.run_id }} 2>/dev/null || true)
-          if [[ -n "$RUN" ]]; then
-            STARTED=$(echo "$RUN" | jq -r '.run_started_at // empty')
-            if [[ -n "$STARTED" ]]; then
-              START_TS=$(date -d "$STARTED" +%s 2>/dev/null || date -j -f "%Y-%m-%dT%H:%M:%SZ" "$STARTED" +%s 2>/dev/null || echo "")
-              NOW_TS=$(date +%s)
-              if [[ -n "$START_TS" ]]; then
-                DIFF=$((NOW_TS - START_TS))
-                MINS=$((DIFF / 60))
-                SECS=$((DIFF % 60))
-                echo "duration=${MINS}m ${SECS}s" >> $GITHUB_OUTPUT
-              fi
+          STARTED=$(gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}" --jq '.run_started_at // empty' 2>/dev/null || echo "")
+          if [[ -n "$STARTED" ]]; then
+            START_TS=$(date -d "$STARTED" +%s 2>/dev/null || date -j -f "%Y-%m-%dT%H:%M:%SZ" "$STARTED" +%s 2>/dev/null || echo "")
+            NOW_TS=$(date +%s)
+            if [[ -n "$START_TS" ]]; then
+              DIFF=$((NOW_TS - START_TS))
+              MINS=$((DIFF / 60))
+              SECS=$((DIFF % 60))
+              echo "duration=${MINS}m ${SECS}s" >> $GITHUB_OUTPUT
             fi
           fi
 
           # Changed files count
-          COMMIT=${{ github.sha }}
-          COMPARE=$(gh api repos/${{ github.repository }}/commits/$COMMIT 2>/dev/null || true)
-          if [[ -n "$COMPARE" ]]; then
-            TOTAL=$(echo "$COMPARE" | jq '.files | length // 0')
-            ADDED=$(echo "$COMPARE" | jq '[.files[]? | select(.status=="added")] | length')
-            REMOVED=$(echo "$COMPARE" | jq '[.files[]? | select(.status=="removed")] | length')
-            MODIFIED=$(echo "$COMPARE" | jq '[.files[]? | select(.status=="modified" or .status=="renamed")] | length')
+          COMPARE=$(gh api "repos/${{ github.repository }}/commits/${{ github.sha }}" --jq '.files' 2>/dev/null || echo "")
+          if [[ -n "$COMPARE" && "$COMPARE" != "null" ]]; then
+            TOTAL=$(echo "$COMPARE" | jq 'length // 0')
+            ADDED=$(echo "$COMPARE" | jq '[.[]? | select(.status=="added")] | length')
+            REMOVED=$(echo "$COMPARE" | jq '[.[]? | select(.status=="removed")] | length')
+            MODIFIED=$(echo "$COMPARE" | jq '[.[]? | select(.status=="modified" or .status=="renamed")] | length')
             echo "files=${TOTAL} files (+${ADDED} -${REMOVED} ~${MODIFIED})" >> $GITHUB_OUTPUT
           fi
 
-      - name: Build payload
-        id: payload
+      - name: Build and send notification
         env:
-          COMMIT_MSG: ${{ steps.status.outputs.commit_msg }}
+          SLACK_COMMIT_MSG: ${{ steps.info.outputs.commit_msg }}
         run: |
           # Build buttons array
           BUTTONS='[
             {"type":"button","text":{"type":"plain_text","text":"View Run"},"url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"},
             {"type":"button","text":{"type":"plain_text","text":"Commit"},"url":"${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}"}'
 
-          PR="${{ steps.status.outputs.pr }}"
+          PR="${{ steps.info.outputs.pr }}"
           if [[ -n "$PR" ]]; then
             BUTTONS="${BUTTONS},
             {\"type\":\"button\",\"text\":{\"type\":\"plain_text\",\"text\":\"PR #${PR}\"},\"url\":\"${{ github.server_url }}/${{ github.repository }}/pull/${PR}\"}"
           fi
-
           BUTTONS="${BUTTONS}]"
 
           # Build text with real newlines
           {
-            echo "${{ steps.status.outputs.icon }} *${{ github.repository }}* — ${{ inputs.result }}${{ inputs.environment != '' && format(' ({0})', inputs.environment) || '' }}"
+            echo "${{ steps.info.outputs.icon }} *${{ github.repository }}* — ${{ inputs.result }}${{ inputs.environment != '' && format(' ({0})', inputs.environment) || '' }}"
             echo "*Branch/Tag:* \`${{ github.ref_name }}\`"
 
-            MERGED="${{ steps.status.outputs.merged }}"
+            MERGED="${{ steps.info.outputs.merged }}"
             if [[ -n "$MERGED" ]]; then
               if [[ -n "$PR" ]]; then
                 echo "*Merged:* \`${MERGED}\` (<${{ github.server_url }}/${{ github.repository }}/pull/${PR}|PR #${PR}>)"
@@ -130,26 +116,24 @@ jobs:
               echo "*PR:* <${{ github.server_url }}/${{ github.repository }}/pull/${PR}|#${PR}>"
             fi
 
-            echo "*Commit:* <${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}|${{ steps.status.outputs.short_sha }}> by ${{ github.actor }}"
-            echo "*Message:* ${COMMIT_MSG}"
+            echo "*Commit:* <${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}|${{ steps.info.outputs.short_sha }}> by ${{ github.actor }}"
+            echo "*Message:* ${SLACK_COMMIT_MSG}"
 
-            FILES="${{ steps.meta.outputs.files }}"
+            FILES="${{ steps.info.outputs.files }}"
             if [[ -n "$FILES" ]]; then
               echo "*Changes:* ${FILES}"
             fi
 
-            DURATION="${{ steps.meta.outputs.duration }}"
+            DURATION="${{ steps.info.outputs.duration }}"
             if [[ -n "$DURATION" ]]; then
               echo "*Duration:* ${DURATION}"
             fi
           } > /tmp/slack_text.txt
 
-          TEXT=$(cat /tmp/slack_text.txt)
-
-          # Build full payload
+          # Build payload via jq (safe JSON encoding)
           PAYLOAD=$(jq -nc \
-            --arg color "${{ steps.status.outputs.color }}" \
-            --arg text "$TEXT" \
+            --arg color "${{ steps.info.outputs.color }}" \
+            --arg text "$(cat /tmp/slack_text.txt)" \
             --argjson buttons "$BUTTONS" \
             '{
               "attachments": [{
@@ -161,13 +145,8 @@ jobs:
               }]
             }')
 
-          echo "json<<EOFPAYLOAD" >> $GITHUB_OUTPUT
-          echo "$PAYLOAD" >> $GITHUB_OUTPUT
-          echo "EOFPAYLOAD" >> $GITHUB_OUTPUT
-
-      - name: Send Slack notification
-        uses: slackapi/slack-github-action@v2
-        with:
-          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
-          webhook-type: incoming-webhook
-          payload: ${{ steps.payload.outputs.json }}
+          # Send to Slack
+          curl -sf -X POST \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD" \
+            "${{ secrets.SLACK_WEBHOOK_URL }}"
