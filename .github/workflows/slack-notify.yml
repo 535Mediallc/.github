@@ -105,36 +105,35 @@ jobs:
 
           BUTTONS="${BUTTONS}]"
 
-          # Build text
-          TEXT="${{ steps.status.outputs.icon }} *${{ github.repository }}* — ${{ inputs.result }}"
+          # Build text with real newlines
+          {
+            echo "${{ steps.status.outputs.icon }} *${{ github.repository }}* — ${{ inputs.result }}${{ inputs.environment != '' && format(' ({0})', inputs.environment) || '' }}"
+            echo "*Branch/Tag:* \`${{ github.ref_name }}\`"
 
-          ENV="${{ inputs.environment }}"
-          if [[ -n "$ENV" ]]; then
-            TEXT="${TEXT} (${ENV})"
-          fi
-
-          TEXT="${TEXT}\n*Branch/Tag:* \`${{ github.ref_name }}\`"
-
-          MERGED="${{ steps.status.outputs.merged }}"
-          if [[ -n "$MERGED" ]]; then
-            TEXT="${TEXT}\n*Merged:* \`${MERGED}\`"
-            if [[ -n "$PR" ]]; then
-              TEXT="${TEXT} (<${{ github.server_url }}/${{ github.repository }}/pull/${PR}|PR #${PR}>)"
+            MERGED="${{ steps.status.outputs.merged }}"
+            if [[ -n "$MERGED" ]]; then
+              if [[ -n "$PR" ]]; then
+                echo "*Merged:* \`${MERGED}\` (<${{ github.server_url }}/${{ github.repository }}/pull/${PR}|PR #${PR}>)"
+              else
+                echo "*Merged:* \`${MERGED}\`"
+              fi
             fi
-          fi
 
-          TEXT="${TEXT}\n*Commit:* <${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}|${{ steps.status.outputs.short_sha }}> by ${{ github.actor }}"
-          TEXT="${TEXT}\n*Message:* ${{ steps.status.outputs.commit_msg }}"
+            echo "*Commit:* <${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}|${{ steps.status.outputs.short_sha }}> by ${{ github.actor }}"
+            echo "*Message:* ${{ steps.status.outputs.commit_msg }}"
 
-          FILES="${{ steps.meta.outputs.files }}"
-          if [[ -n "$FILES" ]]; then
-            TEXT="${TEXT}\n*Changes:* ${FILES}"
-          fi
+            FILES="${{ steps.meta.outputs.files }}"
+            if [[ -n "$FILES" ]]; then
+              echo "*Changes:* ${FILES}"
+            fi
 
-          DURATION="${{ steps.meta.outputs.duration }}"
-          if [[ -n "$DURATION" ]]; then
-            TEXT="${TEXT}\n*Duration:* ${DURATION}"
-          fi
+            DURATION="${{ steps.meta.outputs.duration }}"
+            if [[ -n "$DURATION" ]]; then
+              echo "*Duration:* ${DURATION}"
+            fi
+          } > /tmp/slack_text.txt
+
+          TEXT=$(cat /tmp/slack_text.txt)
 
           # Build full payload
           PAYLOAD=$(jq -nc \
