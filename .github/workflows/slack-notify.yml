@@ -23,6 +23,8 @@ jobs:
     steps:
       - name: Determine status
         id: status
+        env:
+          COMMIT_MSG: ${{ github.event.head_commit.message }}
         run: |
           case "${{ inputs.result }}" in
             failure)
@@ -41,23 +43,26 @@ jobs:
           echo "short_sha=${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
 
           # Extract merged branch and PR number from commit message
-          MSG="${{ github.event.head_commit.message }}"
           MERGED=""
           PR=""
-          if [[ "$MSG" =~ Merge\ pull\ request\ \#([0-9]+)\ from\ [^/]+/(.+) ]]; then
+          if [[ "$COMMIT_MSG" =~ Merge\ pull\ request\ \#([0-9]+)\ from\ [^/]+/(.+) ]]; then
             PR="${BASH_REMATCH[1]}"
             MERGED="${BASH_REMATCH[2]}"
-          elif [[ "$MSG" =~ Merge\ pull\ request\ \#([0-9]+) ]]; then
+          elif [[ "$COMMIT_MSG" =~ Merge\ pull\ request\ \#([0-9]+) ]]; then
             PR="${BASH_REMATCH[1]}"
-          elif [[ "$MSG" =~ Merge\ branch\ \'([^\']+)\' ]]; then
+          elif [[ "$COMMIT_MSG" =~ Merge\ branch\ \'([^\']+)\' ]]; then
             MERGED="${BASH_REMATCH[1]}"
           fi
           echo "merged=$MERGED" >> $GITHUB_OUTPUT
           echo "pr=$PR" >> $GITHUB_OUTPUT
 
-          # Commit message (first line only)
-          FIRST_LINE=$(echo "$MSG" | head -n1)
-          echo "commit_msg=$FIRST_LINE" >> $GITHUB_OUTPUT
+          # Commit message (first line only, safe output via delimiter)
+          FIRST_LINE=$(echo "$COMMIT_MSG" | head -n1)
+          {
+            echo "commit_msg<<EOFMSG"
+            echo "$FIRST_LINE"
+            echo "EOFMSG"
+          } >> $GITHUB_OUTPUT
 
       - name: Get pipeline duration and changed files
         id: meta
@@ -93,6 +98,8 @@ jobs:
 
       - name: Build payload
         id: payload
+        env:
+          COMMIT_MSG: ${{ steps.status.outputs.commit_msg }}
         run: |
           # Build buttons array
           BUTTONS='[
@@ -119,10 +126,12 @@ jobs:
               else
                 echo "*Merged:* \`${MERGED}\`"
               fi
+            elif [[ -n "$PR" ]]; then
+              echo "*PR:* <${{ github.server_url }}/${{ github.repository }}/pull/${PR}|#${PR}>"
             fi
 
             echo "*Commit:* <${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}|${{ steps.status.outputs.short_sha }}> by ${{ github.actor }}"
-            echo "*Message:* ${{ steps.status.outputs.commit_msg }}"
+            echo "*Message:* ${COMMIT_MSG}"
 
             FILES="${{ steps.meta.outputs.files }}"
             if [[ -n "$FILES" ]]; then
