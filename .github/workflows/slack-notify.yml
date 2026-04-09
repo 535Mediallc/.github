@@ -47,6 +47,8 @@ jobs:
           if [[ "$MSG" =~ Merge\ pull\ request\ \#([0-9]+)\ from\ [^/]+/(.+) ]]; then
             PR="${BASH_REMATCH[1]}"
             MERGED="${BASH_REMATCH[2]}"
+          elif [[ "$MSG" =~ Merge\ pull\ request\ \#([0-9]+) ]]; then
+            PR="${BASH_REMATCH[1]}"
           elif [[ "$MSG" =~ Merge\ branch\ \'([^\']+)\' ]]; then
             MERGED="${BASH_REMATCH[1]}"
           fi
