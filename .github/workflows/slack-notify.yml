@@ -1,0 +1,123 @@
+name: Slack Notification
+
+on:
+  workflow_call:
+    inputs:
+      result:
+        required: true
+        type: string
+        description: "Overall job result: success, failure, or cancelled"
+      environment:
+        required: false
+        type: string
+        default: ""
+        description: "Deployment environment (e.g. dev, prod)"
+    secrets:
+      SLACK_WEBHOOK_URL:
+        required: true
+
+jobs:
+  notify:
+    name: Slack Notification
+    runs-on: ubuntu-latest
+    steps:
+      - name: Determine status
+        id: status
+        run: |
+          case "${{ inputs.result }}" in
+            failure)
+              echo "color=#FF0000" >> $GITHUB_OUTPUT
+              echo "icon=❌" >> $GITHUB_OUTPUT
+              ;;
+            cancelled)
+              echo "color=#FFA500" >> $GITHUB_OUTPUT
+              echo "icon=⚠️" >> $GITHUB_OUTPUT
+              ;;
+            *)
+              echo "color=#36A64F" >> $GITHUB_OUTPUT
+              echo "icon=✅" >> $GITHUB_OUTPUT
+              ;;
+          esac
+          echo "short_sha=${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
+
+          # Extract merged branch and PR number from commit message
+          MSG="${{ github.event.head_commit.message }}"
+          MERGED=""
+          PR=""
+          if [[ "$MSG" =~ Merge\ pull\ request\ \#([0-9]+)\ from\ [^/]+/(.+) ]]; then
+            PR="${BASH_REMATCH[1]}"
+            MERGED="${BASH_REMATCH[2]}"
+          elif [[ "$MSG" =~ Merge\ branch\ \'([^\']+)\' ]]; then
+            MERGED="${BASH_REMATCH[1]}"
+          fi
+          echo "merged=$MERGED" >> $GITHUB_OUTPUT
+          echo "pr=$PR" >> $GITHUB_OUTPUT
+
+          # Commit message (first line only)
+          FIRST_LINE=$(echo "$MSG" | head -n1)
+          echo "commit_msg=$FIRST_LINE" >> $GITHUB_OUTPUT
+
+      - name: Get pipeline duration and changed files
+        id: meta
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Pipeline duration
+          RUN=$(gh api repos/${{ github.repository }}/actions/runs/${{ github.run_id }} 2>/dev/null || true)
+          if [[ -n "$RUN" ]]; then
+            STARTED=$(echo "$RUN" | jq -r '.run_started_at // empty')
+            if [[ -n "$STARTED" ]]; then
+              START_TS=$(date -d "$STARTED" +%s 2>/dev/null || date -j -f "%Y-%m-%dT%H:%M:%SZ" "$STARTED" +%s 2>/dev/null || echo "")
+              NOW_TS=$(date +%s)
+              if [[ -n "$START_TS" ]]; then
+                DIFF=$((NOW_TS - START_TS))
+                MINS=$((DIFF / 60))
+                SECS=$((DIFF % 60))
+                echo "duration=${MINS}m ${SECS}s" >> $GITHUB_OUTPUT
+              fi
+            fi
+          fi
+
+          # Changed files count
+          COMMIT=${{ github.sha }}
+          COMPARE=$(gh api repos/${{ github.repository }}/commits/$COMMIT 2>/dev/null || true)
+          if [[ -n "$COMPARE" ]]; then
+            TOTAL=$(echo "$COMPARE" | jq '.files | length // 0')
+            ADDED=$(echo "$COMPARE" | jq '[.files[]? | select(.status=="added")] | length')
+            REMOVED=$(echo "$COMPARE" | jq '[.files[]? | select(.status=="removed")] | length')
+            MODIFIED=$(echo "$COMPARE" | jq '[.files[]? | select(.status=="modified" or .status=="renamed")] | length')
+            echo "files=${TOTAL} files (+${ADDED} -${REMOVED} ~${MODIFIED})" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Send Slack notification
+        uses: slackapi/slack-github-action@v2
+        with:
+          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            {
+              "attachments": [
+                {
+                  "color": "${{ steps.status.outputs.color }}",
+                  "blocks": [
+                    {
+                      "type": "section",
+                      "text": {
+                        "type": "mrkdwn",
+                        "text": "${{ steps.status.outputs.icon }} *${{ github.repository }}* — ${{ inputs.result }}${{ inputs.environment != '' && format(' ({0})', inputs.environment) || '' }}\n*Branch/Tag:* `${{ github.ref_name }}`${{ steps.status.outputs.merged != '' && format('\n*Merged:* `{0}`', steps.status.outputs.merged) || '' }}${{ steps.status.outputs.pr != '' && format(' (<{0}/{1}/pull/{2}|PR #{2}>)', github.server_url, github.repository, steps.status.outputs.pr) || '' }}\n*Commit:* <${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}|${{ steps.status.outputs.short_sha }}> by ${{ github.actor }}\n*Message:* ${{ steps.status.outputs.commit_msg }}${{ steps.meta.outputs.files != '' && format('\n*Changes:* {0}', steps.meta.outputs.files) || '' }}${{ steps.meta.outputs.duration != '' && format('\n*Duration:* {0}', steps.meta.outputs.duration) || '' }}"
+                      }
+                    },
+                    {
+                      "type": "actions",
+                      "elements": [
+                        {
+                          "type": "button",
+                          "text": { "type": "plain_text", "text": "View Run" },
+                          "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
